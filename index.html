@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>像素跑酷 · 手把手从零开始</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            user-select: none;
+        }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: #1a1e2c;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        .game-wrapper {
+            background: #2d2f3b;
+            padding: 24px 24px 20px;
+            border-radius: 20px;
+            box-shadow: 0 12px 0 #0f1118, 0 16px 24px rgba(0,0,0,0.5);
+        }
+        canvas {
+            display: block;
+            margin: 0 auto;
+            image-rendering: crisp-edges;       /* 像素风关键 */
+            image-rendering: pixelated;
+            border: 4px solid #5a5e73;
+            border-radius: 12px;
+            background: #6b8cff;
+            box-shadow: inset 0 0 0 2px #4a4e62, 0 8px 0 #0f1118;
+        }
+        .hud {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin: 12px 4px 0;
+            color: #ffecbb;
+            text-shadow: 3px 3px 0 #3f2b1a;
+            font-size: 22px;
+            font-weight: bold;
+            letter-spacing: 1px;
+        }
+        .restart-btn {
+            background: #ffb84d;
+            border: none;
+            color: #2d1e0e;
+            font-family: inherit;
+            font-size: 18px;
+            font-weight: bold;
+            padding: 6px 20px;
+            border-radius: 40px;
+            cursor: pointer;
+            box-shadow: 0 5px 0 #b46f1a, 0 6px 12px black;
+            transition: transform 0.06s, box-shadow 0.06s;
+            letter-spacing: 1px;
+        }
+        .restart-btn:active {
+            transform: translateY(4px);
+            box-shadow: 0 1px 0 #b46f1a, 0 6px 12px black;
+        }
+        .restart-btn:hover {
+            background: #ffc266;
+        }
+        .tip {
+            color: #b6c8ff;
+            font-size: 14px;
+            margin-top: 12px;
+            text-align: center;
+            text-shadow: 2px 2px 0 #1e1e2a;
+        }
+    </style>
+</head>
+<body>
+<div class="game-wrapper">
+    <canvas id="gameCanvas" width="600" height="300"></canvas>
+    <div class="hud">
+        <span>🏆 得分 <span id="scoreDisplay">0</span></span>
+        <button class="restart-btn" id="restartButton">▶ 重新开始</button>
+    </div>
+    <div class="tip">空格 / 点击画面 跳跃 · 像素跑酷</div>
+</div>
+
+<script>
+    (function() {
+        // ============================================================
+        // 第一步：获取画布与绘图上下文 (所有绘制都基于这个 canvas)
+        // ============================================================
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // 为了让像素更清晰，关闭抗锯齿 (虽然 image-rendering 已经处理，但额外保证)
+        ctx.imageSmoothingEnabled = false;
+
+        // ============================================================
+        // 第二步：定义游戏核心参数 (全部用像素单位，简单直观)
+        // ============================================================
+        const GROUND_Y = 260;          // 地面高度 (y坐标)
+        const PLAYER_WIDTH = 24;       // 玩家宽度
+        const PLAYER_HEIGHT = 30;      // 玩家高度
+        const PLAYER_X = 80;           // 玩家固定水平位置 (不随移动改变)
+        const PLAYER_GROUND_Y = GROUND_Y - PLAYER_HEIGHT;  // 站立时的y
+
+        // 重力与跳跃参数
+        const GRAVITY = 0.6;
+        const JUMP_FORCE = -11;        // 负值向上
+
+        // 障碍物设置
+        const OBSTACLE_WIDTH = 20;
+        const OBSTACLE_HEIGHT = 26;
+        const OBSTACLE_SPEED = 5;      // 每帧向左移动像素
+        const MIN_OBS_Y = GROUND_Y - OBSTACLE_HEIGHT; // 障碍物贴地
+
+        // 生成障碍物的间隔（帧数），越小越密集
+        const MIN_SPAWN_GAP = 60;
+        const MAX_SPAWN_GAP = 110;
+
+        // 得分：每帧增加（随速度加快可调整，但这里保持简单）
+        const SCORE_PER_FRAME = 0.1;
+
+        // ============================================================
+        // 第三步：定义游戏状态变量
+        // ============================================================
+        let player = {
+            x: PLAYER_X,
+            y: PLAYER_GROUND_Y,
+            vy: 0,
+            width: PLAYER_WIDTH,
+            height: PLAYER_HEIGHT,
+            isOnGround: true
+        };
+
+        let obstacles = [];             // 障碍物数组，每个元素包含 x, y, width, height
+        let frameCounter = 0;           // 帧计数器，用于生成间隔
+        let nextSpawnFrame = 90;        // 下一次生成障碍物的帧数 (初始给一点缓冲)
+        let score = 0;
+        let gameOver = false;
+
+        // 用于动画的小细节：跑步时的腿摆动，让画面更生动 (仅视觉)
+        let walkCycle = 0;
+
+        // 得分显示元素
+        const scoreDisplay = document.getElementById('scoreDisplay');
+
+        // ============================================================
+        // 第四步：重置游戏到初始状态
+        // ============================================================
+        function resetGame() {
+            gameOver = false;
+            score = 0;
+            frameCounter = 0;
+            nextSpawnFrame = 90;        // 重置后第一只障碍物在90帧后出现
+
+            player = {
+                x: PLAYER_X,
+                y: PLAYER_GROUND_Y,
+                vy: 0,
+                width: PLAYER_WIDTH,
+                height: PLAYER_HEIGHT,
+                isOnGround: true
+            };
+
+            obstacles = [];
+            walkCycle = 0;
+            updateScoreDisplay();
+        }
+
+        // 更新HTML上的分数
+        function updateScoreDisplay() {
+            scoreDisplay.textContent = Math.floor(score);
+        }
+
+        // ============================================================
+        // 第五步：处理跳跃 (由键盘/鼠标/触摸触发)
+        // ============================================================
+        function jump() {
+            if (gameOver) return;                 // 游戏结束不能跳
+            // 只有在地面 (或非常接近地面) 才能跳
+            if (player.y >= PLAYER_GROUND_Y - 1 && player.vy === 0) {
+                player.vy = JUMP_FORCE;
+                player.isOnGround = false;
+            }
+        }
+
+        // 键盘监听：空格 / 上箭头
+        window.addEventListener('keydown', (e) => {
+            if (e.key === ' ' || e.key === 'Space' || e.key === 'ArrowUp') {
+                e.preventDefault();   // 阻止页面滚动
+                jump();
+            }
+        });
+
+        // 点击canvas也能跳跃 (方便触摸屏/手机)
+        canvas.addEventListener('click', (e) => {
+            e.preventDefault();
+            jump();
+        });
+
+        // 防止触摸时页面缩放/滚动
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            jump();
+        }, { passive: false });
+
+        // 重新开始按钮
+        document.getElementById('restartButton').addEventListener('click', () => {
+            resetGame();
+        });
+
+        // ============================================================
+        // 第六步：更新逻辑 (每一帧都调用)
+        // ============================================================
+        function update() {
+            if (gameOver) return;
+
+            // 1. 玩家物理
+            player.vy += GRAVITY;
+            player.y += player.vy;
+
+            // 落地检测
+            if (player.y >= PLAYER_GROUND_Y) {
+                player.y = PLAYER_GROUND_Y;
+                player.vy = 0;
+                player.isOnGround = true;
+            } else {
+                player.isOnGround = false;
+            }
+
+            // 跑步动画计数器 (仅视觉)
+            if (player.isOnGround) {
+                walkCycle = (walkCycle + 1) % 20;
+            } else {
+                walkCycle = 0;  // 空中不摆动腿
+            }
+
+            // 2. 生成障碍物 (根据帧计数器)
+            if (frameCounter >= nextSpawnFrame) {
+                // 创建新障碍物，从右侧外进入
+                obstacles.push({
+                    x: canvas.width,
+                    y: MIN_OBS_Y,                // 贴地
+                    width: OBSTACLE_WIDTH,
+                    height: OBSTACLE_HEIGHT
+                });
+
+                // 计算下一次生成帧：随机间隔，并随着分数增加稍微加快生成速度 (更有挑战)
+                let speedFactor = Math.max(0.7, 1 - Math.floor(score / 300) * 0.1);
+                let baseGap = Math.floor(Math.random() * (MAX_SPAWN_GAP - MIN_SPAWN_GAP + 1)) + MIN_SPAWN_GAP;
+                let gap = Math.max(30, Math.floor(baseGap * speedFactor));
+                nextSpawnFrame = frameCounter + gap;
+            }
+
+            // 3. 移动障碍物 + 碰撞检测
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                const obs = obstacles[i];
+                obs.x -= OBSTACLE_SPEED;
+
+                // 碰撞检测 (矩形重叠)
+                if (!gameOver && 
+                    player.x < obs.x + obs.width &&
+                    player.x + player.width > obs.x &&
+                    player.y < obs.y + obs.height &&
+                    player.y + player.height > obs.y) {
+                    gameOver = true;
+                    break;  // 一旦碰撞，立即停止更新其他障碍物（但已经改变gameOver）
+                }
+
+                // 如果障碍物完全移出左侧画面，删除并加分
+                if (obs.x + obs.width < 0) {
+                    obstacles.splice(i, 1);
+                    // 加分：成功躲避一个障碍
+                    score += 15;
+                    updateScoreDisplay();
+                }
+            }
+
+            // 如果碰撞发生了，跳出循环后不再增加帧计数器？但我们希望游戏结束冻结，所以直接返回
+            if (gameOver) return;
+
+            // 4. 分数自然增长 (跑得越久分越高)
+            score += SCORE_PER_FRAME;
+            updateScoreDisplay();
+
+            // 5. 帧计数器增加
+            frameCounter++;
+        }
+
+        // ============================================================
+        // 第七步：绘制一切 (像素风格！)
+        // ============================================================
+        function draw() {
+            // 清空画布 (背景色)
+            ctx.fillStyle = '#6b8cff';    // 清爽的像素蓝天
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // ----- 绘制像素云朵 (装饰) -----
+            ctx.fillStyle = '#f0f6ff';
+            // 云1
+            ctx.fillRect(120, 50, 40, 16);
+            ctx.fillRect(100, 66, 80, 16);
+            ctx.fillRect(140, 34, 30, 16);
+            // 云2
+            ctx.fillRect(420, 90, 50, 16);
+            ctx.fillRect(400, 106, 90, 16);
+            ctx.fillRect(460, 74, 30, 16);
+
+            // ----- 绘制地面 (像素块风格) -----
+            ctx.fillStyle = '#5a8c3a';      // 草地绿
+            ctx.fillRect(0, GROUND_Y, canvas.width, 12);
+            ctx.fillStyle = '#8b5a2b';      // 泥土棕色
+            ctx.fillRect(0, GROUND_Y + 12, canvas.width, 28);
+            // 加一些像素颗粒
+            ctx.fillStyle = '#a87b4a';
+            for (let i = 0; i < canvas.width; i += 30) {
+                ctx.fillRect(i + 5, GROUND_Y + 16, 6, 6);
+                ctx.fillRect(i + 18, GROUND_Y + 24, 5, 5);
+            }
+
+            // ----- 绘制障碍物 (像素风方块 + 细节) -----
+            obstacles.forEach(obs => {
+                // 主色：深灰/紫色
+                ctx.fillStyle = '#4a3b5c';
+                ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
+                // 像素高光
+                ctx.fillStyle = '#7a5f8f';
+                ctx.fillRect(obs.x + 4, obs.y + 4, 6, 6);
+                ctx.fillRect(obs.x + 12, obs.y + 14, 6, 6);
+                // 像素暗部
+                ctx.fillStyle = '#2d1f38';
+                ctx.fillRect(obs.x + 10, obs.y + 8, 4, 4);
+                ctx.fillRect(obs.x + 2, obs.y + 18, 4, 4);
+            });
+
+            // ----- 绘制玩家 (可爱的像素小人) -----
+            const pX = player.x;
+            const pY = player.y;
+
+            // 身体 (蓝色工装)
+            ctx.fillStyle = '#2f6f9f';
+            ctx.fillRect(pX, pY + 8, PLAYER_WIDTH, PLAYER_HEIGHT - 12);
+            // 头部 (浅肤色)
+            ctx.fillStyle = '#ffdb9e';
+            ctx.fillRect(pX + 2, pY, PLAYER_WIDTH - 4, 10);
+            // 眼睛 (黑色像素)
+            ctx.fillStyle = '#1a1a2c';
+            ctx.fillRect(pX + 6, pY + 3, 3, 3);    // 左眼
+            ctx.fillRect(pX + 15, pY + 3, 3, 3);   // 右眼
+            // 头发/帽子 (红色)
+            ctx.fillStyle = '#d44a4a';
+            ctx.fillRect(pX + 1, pY - 2, PLAYER_WIDTH - 2, 6);
+            // 裤子 (深色)
+            ctx.fillStyle = '#1e3a5f';
+            ctx.fillRect(pX, pY + PLAYER_HEIGHT - 8, PLAYER_WIDTH, 8);
+
+            // 腿部动画 (根据walkCycle产生前后摆动效果)
+            ctx.fillStyle = '#1e3a5f';
+            if (player.isOnGround) {
+                // 在地面时: 根据walkCycle改变双腿位置
+                if (walkCycle < 10) {
+                    // 左腿在前，右腿在后
+                    ctx.fillRect(pX + 2, pY + PLAYER_HEIGHT - 4, 6, 8);   // 左腿（向下伸出）
+                    ctx.fillRect(pX + 14, pY + PLAYER_HEIGHT - 2, 6, 6);  // 右腿弯曲
+                } else {
+                    // 右腿在前，左腿在后
+                    ctx.fillRect(pX + 4, pY + PLAYER_HEIGHT - 2, 6, 6);
+                    ctx.fillRect(pX + 14, pY + PLAYER_HEIGHT - 4, 6, 8);
+                }
+            } else {
+                // 空中：双腿并拢向后
+                ctx.fillRect(pX + 3, pY + PLAYER_HEIGHT - 3, 6, 7);
+                ctx.fillRect(pX + 15, pY + PLAYER_HEIGHT - 3, 6, 7);
+            }
+
+            // 手臂 (简单的像素手臂)
+            ctx.fillStyle = '#2f6f9f';
+            ctx.fillRect(pX - 4, pY + 12, 5, 8);
+            ctx.fillRect(pX + PLAYER_WIDTH - 1, pY + 12, 5, 8);
+
+            // ----- 如果游戏结束，显示遮罩和文字 -----
+            if (gameOver) {
+                // 半透明黑色遮罩
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                // 像素风大文字 "GAME OVER"
+                ctx.font = 'bold 40px "Courier New", Courier, monospace';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                // 阴影
+                ctx.fillStyle = '#1a0f0f';
+                ctx.fillText('GAME OVER', canvas.width/2 + 4, canvas.height/2 + 4);
+                // 主文字
+                ctx.fillStyle = '#ffcaca';
+                ctx.fillText('GAME OVER', canvas.width/2, canvas.height/2);
+
+                // 提示重新开始
+                ctx.font = 'bold 18px "Courier New", Courier, monospace';
+                ctx.fillStyle = '#ffe9b0';
+                ctx.fillText('点击「重新开始」', canvas.width/2, canvas.height/2 + 60);
+            }
+
+            // 显示当前得分在canvas左上角(同时HTML也有，但canvas内更直观)
+            ctx.font = 'bold 20px "Courier New", Courier, monospace';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'top';
+            ctx.fillStyle = '#2d1e0e';
+            ctx.fillText('分数: ' + Math.floor(score), 16, 16);
+            ctx.fillStyle = '#fff7d6';
+            ctx.fillText('分数: ' + Math.floor(score), 14, 14);
+        }
+
+        // ============================================================
+        // 第八步：游戏主循环 (使用 requestAnimationFrame)
+        // ============================================================
+        function gameLoop() {
+            if (!gameOver) {
+                update();      // 只有没结束时才更新逻辑
+            }
+            draw();            // 每帧都绘制 (不管结束与否，结束也要显示结束画面)
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // ============================================================
+        // 第九步：启动游戏！
+        // ============================================================
+        resetGame();           // 初始化状态
+        gameLoop();            // 开始循环
+
+        // 为了让触摸体验更好，阻止移动端双击缩放等(已经通过meta处理，但再加一层保险)
+        canvas.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+    })();
+</script>
+</body>
+</html>
